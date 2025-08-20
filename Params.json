@@ -1,0 +1,45 @@
+{
+  "programms": {
+    "Data reading": 0,
+    "Photoneutron calculations": 1,
+    "Journal notes": 2
+    },
+
+  "counterData": {
+    "calibrations": {
+      "Neut_Mon_1": -0.03859,
+      "Neut_Mon_2": -0.03859,
+      "SXR_Mon_1": -0.001084,
+      "SXR_Mon_2": -0.001084,
+      "SXR_Mon_3": -0.001084,
+      "SXR_Mon_4": -0.001084,
+      "HXR_Mon_1": -0.0001221,
+      "ipl": 0
+    },
+    "types": {
+      "MIV": "DAQmx",
+      "EMD": "Rogovsky_avg"
+    }
+  },
+
+  "journalData":{
+      "paths": {
+        "1": "./MIV",
+        "2": "./EMD",
+        "3": "./ECH"
+      },
+      "filenames": {
+        "1": "T15MD_number_DAQmx.tdms",
+        "2": ".tdms"
+      },
+    "channels": {
+      "N1": "Neut_Mon_1",
+      "N2": "Neut_Mon_2",
+      "H": "HXR_Mon_1",
+      "S1": "SXR_Mon_1",
+      "S2": "SXR_Mon_1",
+      "S3": "SXR_Mon_1",
+      "S4": "SXR_Mon_1"
+    }
+  }
+}
