@@ -1,0 +1,51 @@
+# ------------------------
+# Visual Studio
+# ------------------------
+.vs/
+*.user
+*.suo
+*.cache
+*.pdb
+*.obj
+*.exe
+*.dll
+*.log
+*.tlog
+*.ipch
+*.iobj
+*.iuser
+*.unsuccessfulbuild
+
+# ------------------------
+# JetBrains IDEs (IntelliJ, PyCharm, WebStorm, etc.)
+# ------------------------
+.idea/
+*.iml
+*.iws
+out/
+
+# ------------------------
+# Build / Output
+# ------------------------
+build/
+dist/
+bin/
+obj/
+target/
+*.class
+
+# ------------------------
+# OS-specific
+# ------------------------
+.DS_Store
+Thumbs.db
+
+# ------------------------
+# Python (optional, if you have Python in your project)
+# ------------------------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+venv/
