@@ -633,16 +633,6 @@
           </size>
          </property>
         </widget>
-        <widget class="QComboBox" name="ProgramChannelBox">
-         <property name="geometry">
-          <rect>
-           <x>280</x>
-           <y>10</y>
-           <width>131</width>
-           <height>22</height>
-          </rect>
-         </property>
-        </widget>
        </widget>
       </item>
      </layout>
@@ -678,7 +668,7 @@
      <x>0</x>
      <y>0</y>
      <width>946</width>
-     <height>26</height>
+     <height>21</height>
     </rect>
    </property>
   </widget>

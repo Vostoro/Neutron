@@ -1,15 +1,11 @@
 import numpy as np
 from math import log, sqrt
-from nuclei_data import data, Na, r_0, m0c2, e, me
-import photoPB_data
-from photoPB_data import photo_pb_E
-
+from nuclei_data import *
 
 class Nucleus(object):
-    def __init__(self, Ne, E0=0,  element="Fe", uplink=True, is_electron=True):
+    def __init__(self, Ne, E0,  element="Fe", uplink=True, is_electron=True):
         self.E1 = 0.0253
         self.E0 = E0
-        self.energy_widening()
         self.element = element
         self.M = data[self.element]["M"]
         self.Z = data[self.element]["Z"]
@@ -43,6 +39,7 @@ class Nucleus(object):
 
         self.E = E
         self.cs = cs
+
         opened = open("data/Helium_Photon_detection_Sig.txt")
         file = opened.readlines()
         self.He_E = np.zeros([len(file)])
@@ -56,47 +53,129 @@ class Nucleus(object):
         opened.close()
 
         if uplink:
+            self.energy_widening()
             self.uplinking_cs()
-    def energy_widening(self):
-        resulting_electron_spectrum = []
-        self.electron_energy_indexes = []
+
+    def energy_widening(self, sigma_fraction=1e-3, sigma_eV=None, sigma_multiplier=5,
+                        threshold_frac=1e-8):
+        """
+        Create a (normalized) electron-energy distribution on FULL_ENERGY_GRID
+        representing a Gaussian spread around self.E0.
+
+        Parameters
+        ----------
+        sigma_fraction : float
+            If sigma_eV is None, sigma = sigma_fraction * E0.
+        sigma_eV : float or None
+            If provided, use this absolute sigma (in eV) instead of sigma_fraction.
+        sigma_multiplier : float
+            Keep only grid points within +/- sigma_multiplier * sigma (for speed).
+        threshold_frac : float
+            Bins with population < threshold_frac * total_electrons will be omitted
+            from self.electron_energy_indexes.
+
+        Effects
+        -------
+        Sets self.Ne to the resulting array (counts per energy bin) and
+        self.electron_energy_indexes to the list of indices with significant counts.
+
+        Returns
+        -------
+        resulting_electron_spectrum : np.ndarray
+            The array of electron counts per FULL_ENERGY_GRID bin.
+        """
+
+        opened = open("interpvalues.txt")
+        file = opened.readlines()
+        self.amount_of_elements = int(file[0].strip('\n'))
+
+        self.FULL_ENERGY_GRID = np.zeros(self.amount_of_elements)
+        string = (file[2].strip('\n')).split(', ')
         for i in range(0, len(self.FULL_ENERGY_GRID)):
-            power = -((self.FULL_ENERGY_GRID[i] - self.E0) / (self.E0/(10**3))) ** 2
-            temp = self.Ne * pow(2.71828, power)
-            if temp >= 0:
-                resulting_electron_spectrum.append(temp)
-                self.electron_energy_indexes.append(i)
-        resulting_electron_spectrum = np.array(resulting_electron_spectrum)
-        self.Ne = resulting_electron_spectrum
+            if string[i] != '':
+                self.FULL_ENERGY_GRID[i] = float(string[i])
 
 
+        Egrid = np.asarray(self.FULL_ENERGY_GRID, dtype=float)
+        if Egrid.size == 0:
+            raise ValueError("FULL_ENERGY_GRID is empty")
+
+        E0 = float(self.E0)
+
+        # Determine total number of electrons (if self.Ne is scalar or already an array)
+        Ne_attr = np.asarray(self.Ne)
+        if Ne_attr.ndim == 0:
+            total_electrons = float(Ne_attr)
+        else:
+            total_electrons = float(np.sum(Ne_attr))
+
+        if sigma_eV is None:
+            sigma = max(abs(E0) * float(sigma_fraction), 1e-12)
+        else:
+            sigma = float(sigma_eV)
+            if sigma <= 0:
+                raise ValueError("sigma_eV must be positive")
+
+        # Build Gaussian (standard form: exp(-0.5 * ((x/sigma)^2)))
+        x = (Egrid - E0) / sigma
+        gauss = np.exp(-0.5 * x ** 2)
+
+        # Optionally zero out far tails for efficiency
+        mask_range = np.abs(x) <= sigma_multiplier
+        gauss = gauss * mask_range
+
+        # If everything masked out (e.g., sigma very small), place all electrons in nearest bin
+        if gauss.sum() <= 0:
+            spectrum = np.zeros_like(gauss)
+            idx = np.abs(Egrid - E0).argmin()
+            spectrum[idx] = total_electrons
+        else:
+            spectrum = gauss / gauss.sum() * total_electrons
+
+        # Build electron_energy_indexes: only bins above threshold
+        threshold = threshold_frac * total_electrons
+        idxs = np.nonzero(spectrum > threshold)[0].tolist()
+
+        # Save to object (overwrites self.Ne as an array of bin counts)
+        self.electron_energy_indexes = idxs
+        self.Ne = spectrum
+
+        return spectrum
 
     def recalculate_crosssections(self, steps=pow(10, 5), filename="interpvalues.txt"):
-        print('Recalcultaing')
+        """
+        Recalculate cross-section by interpolating the values from nuclei_data.
+
+        Parameters
+        ----------
+        steps : int
+            The amount of steps between 0.0253 and max energy
+        filename : String
+            The name of the file in which the interpolated values are saved.
+
+        Effects
+        -------
+        Creates a file with values of energy grid and cross-sections.
+
+        Returns
+        -------
+        Nothing
+
+        """
+
         new_file = open(filename, "w")
         N = steps  # Number of steps
         Energies = np.zeros(N)  # Photon energy grid
-        Brems_CS = np.zeros(N)  # Bremsstrahlung CS
-        E0 = 100 * pow(10, 6)  # Max energy in eV
-        E1 = self.E1 / m0c2  # Changing both energies to m0c2 units
-        E0 = E0 / m0c2
-
-        for i in range(1, N):
-            Energies[i] = E1 + i * (E0 - E1) / N
-            E = E0 - Energies[i]
-            Brems_CS[i] = 4 * pow(self.Z, 2) * pow(r_0, 2) / 137 * Energies[i] * (
-                    (1 + pow(E / E0, 2) - 2 / 3 * E / E0) * log(183 * pow(self.Z, -1)) + 1 / 9 * E / E0)
-        # Changing energy back to eV and saving grid to file
-
+        new_file.write(f"{steps}\n")
+        dE = (self.E0 - self.E1)/N
+        # Saving grid to file
         new_file.write("Energy grid\n")
-        for i in range(0, len(Energies)):
-            Energies[i] = Energies[i] * m0c2
+        for i in range(0, N):
+            Energies[i] = self.E1 + i * dE
             new_file.write(str(Energies[i]) + ', ')
         new_file.write('\n')
 
-        new_file.write("Bremsstrahlung cs grid\n")
-        for sigma in Brems_CS:
-            new_file.write(str(sigma) + ', ')
+        new_file.write("LEGACY LINES\n")
         new_file.write("\n")
 
         # Photoneutron cross-section
@@ -112,7 +191,7 @@ class Nucleus(object):
         # Photon shielding cross-section
         Photoshielding_CS = np.zeros(N)
         for i in range(1, N):
-            Photoshielding_CS[i] = np.interp(Energies[i], photoPB_data.photo_pb_E, photoPB_data.photo_pb_cs, left=0,
+            Photoshielding_CS[i] = np.interp(Energies[i], photo_pb_E, photo_pb_cs, left=0,
                                              right=0)
         new_file.write("PB Slowing cs grid\n")
         for cross in Photoshielding_CS:
@@ -123,28 +202,14 @@ class Nucleus(object):
         for i in range(0, len(NEUTRON_ENERGY_GRID)):
             if (Energies[i] - 11.1979) > 0:
                 NEUTRON_ENERGY_GRID[i] = 55 / 56 * (Energies[i] - 11.1979)
-        '''
-                NEUTRON_ENERGY_GRID = np.zeros(pow(10,6))
-                for i in range(0,len(NEUTRON_ENERGY_GRID)):
-                    Eph = Energies[i]
-                    mn = 939.565
-                    a = 56/55
-                    b = 2*Eph/(55*mn)
-                    c = (Eph**2)/(55*(mn**2)) - 2*Eph/mn
-                    D = -(b**2 - 4*a*c)
-                    #print((-b + sqrt(D))/(2*a))
-                    if D > 0:
-                        NEUTRON_ENERGY_GRID[i] = 1000*(-b + sqrt(D))/(2*a)
-
-        '''
 
         # Neutron multiplication cross-section
         Neutron_n2n_CS = np.zeros(N)
         Neutron_n3n_CS = np.zeros(N)
         for i in range(1, N):
-            Neutron_n2n_CS[i] = np.interp(NEUTRON_ENERGY_GRID[i], photoPB_data.n_pb_2n_E, photoPB_data.n_pb_2n_cs,
+            Neutron_n2n_CS[i] = np.interp(NEUTRON_ENERGY_GRID[i], n_pb_2n_E, n_pb_2n_cs,
                                           left=0, right=0)
-            Neutron_n3n_CS[i] = np.interp(NEUTRON_ENERGY_GRID[i], photoPB_data.n_pb_3n_E, photoPB_data.n_pb_3n_cs,
+            Neutron_n3n_CS[i] = np.interp(NEUTRON_ENERGY_GRID[i], n_pb_3n_E, n_pb_3n_cs,
                                           left=0, right=0)
 
         # Neutron spectrum differs from the photon spectrum and thus its energies are written separately
@@ -162,9 +227,9 @@ class Nucleus(object):
         new_file.write("\n")
 
         # Neutron detection cross-section
-        Neutron_detection_cs = np.interp(0.00253, photoPB_data.n_B10_alpha_E, photoPB_data.n_B10_alpha_cs, left=0,
+        Neutron_detection_cs = np.interp(0.00253, n_B10_alpha_E, n_B10_alpha_cs, left=0,
                                          right=0)
-        new_file.write("thermal neutron detection cross section\n")
+        new_file.write("thermal neutron detection cross section grid\n")
         new_file.write(str(Neutron_detection_cs) + "\n")
 
         # Photon detection cross-section
@@ -172,114 +237,125 @@ class Nucleus(object):
         for i in range(1, N):
             Photon_detection_cs[i] = np.interp(Energies[i], self.He_E, self.He_cs, left=0, right=0)
 
-        new_file.write("Photon detection cross section\n")
+        new_file.write("Photon detection cross section grid\n")
         for cross in Photon_detection_cs:
             new_file.write(str(cross) + ', ')
         new_file.write("\n")
         new_file.close()
 
-    def uplinking_cs(self):
-        opened = open("interpvalues.txt")
+    def uplinking_cs(self, filename="interpvalues.txt"):
+        """
+                Gets and sets up the energy grid and cross-section grid from file and chooses only the energies lower
+                than the starting energy of electrons.
+
+                Parameters
+                ----------
+                filename : String
+                    The name of the file from which the interpolated values read.
+
+                Effects
+                -------
+                Sets up energy grid and cross-cross sections. Saves only values up to  max value of self.E0
+                    self.PHOTONEUTRON_GRID - photoneutron cross-section generation for material chosen at the last recalculation
+                    self.PHOTON_SLOWING_GRID - photon slowing cross-section for Pb
+                    self.NEUTRON_N2N_GRID - (n,2n) multiplication cross-section for Pb
+                    self.NEUTRON_N3N_GRID - (n,3n) multiplication cross-section for Pb
+                    self.PHOTON_DETECTION_GRID - electron pair production cross-section for Helium
+                    self.PhotonEnergies - the energy grid
+                    self.PhotonEnergies_length - the length of elements in the grid
+
+                Returns
+                -------
+                Nothing
+
+                """
+
+        opened = open(filename)
         file = opened.readlines()
-        N = 10 ** 5
+
+        self.amount_of_elements = int(file[0].strip('\n'))
+
+        N = self.amount_of_elements
 
         self.FULL_ENERGY_GRID = np.zeros(N)
-        string = (file[1].strip('\n')).split(', ')
+        string = (file[2].strip('\n')).split(', ')
         for i in range(0, len(self.FULL_ENERGY_GRID)):
             if string[i] != '':
                 self.FULL_ENERGY_GRID[i] = float(string[i])
 
-        self.BREMSSTRAHLUNG_GRID = np.zeros(N)
-        string = (file[3].strip('\n')).split(', ')
-        Total_brems = 0
-        for i in range(0, len(self.BREMSSTRAHLUNG_GRID)):
+
+        PHOTONEUTRON_GRID = np.zeros(N)
+        string = (file[6].strip('\n')).split(', ')
+        for i in range(0, len(PHOTONEUTRON_GRID)):
             if string[i] != '':
-                self.BREMSSTRAHLUNG_GRID[N - i - 1] = float(string[i]) * 10 ** -12
-                Total_brems += float(string[i])
+                PHOTONEUTRON_GRID[i] = float(string[i])
 
-
-
-        self.BREMSSTRAHLUNG_GRID = Brems_CS
-
-        self.PHOTONEUTRON_GRID = np.zeros(N)
-        string = (file[5].strip('\n')).split(', ')
-        for i in range(0, len(self.PHOTONEUTRON_GRID)):
+        PHOTON_SLOWING_GRID = np.zeros(N)
+        string = (file[8].strip('\n')).split(', ')
+        for i in range(0, len(PHOTON_SLOWING_GRID)):
             if string[i] != '':
-                self.PHOTONEUTRON_GRID[i] = float(string[i])
-
-        self.PHOTON_SLOWING_GRID = np.zeros(N)
-        string = (file[7].strip('\n')).split(', ')
-        for i in range(0, len(self.PHOTON_SLOWING_GRID)):
-            if string[i] != '':
-                self.PHOTON_SLOWING_GRID[i] = float(string[i])
+                PHOTON_SLOWING_GRID[i] = float(string[i])
 
         NEUTRON_ENERGY_GRID = np.zeros(N)
-        string = (file[9].strip('\n')).split(', ')
+        string = (file[10].strip('\n')).split(', ')
         for i in range(0, len(NEUTRON_ENERGY_GRID)):
             if string[i] != '':
                 NEUTRON_ENERGY_GRID[i] = float(string[i])
 
-        self.NEUTRON_N2N_GRID = np.zeros(N)
-        string = (file[11].strip('\n')).split(', ')
-        for i in range(0, len(self.NEUTRON_N2N_GRID)):
+        NEUTRON_N2N_GRID = np.zeros(N)
+        string = (file[12].strip('\n')).split(', ')
+        for i in range(0, len(NEUTRON_N2N_GRID)):
             if string[i] != '':
-                self.NEUTRON_N2N_GRID[i] = float(string[i])
+                NEUTRON_N2N_GRID[i] = float(string[i])
         # if self.NEUTRON_N2N_GRID[i] != 0:
         #	print(f'Not a zero, i = {i}')
 
-        self.NEUTRON_N3N_GRID = np.zeros(N)
-        string = (file[13].strip('\n')).split(', ')
-        for i in range(0, len(self.NEUTRON_N3N_GRID)):
+        NEUTRON_N3N_GRID = np.zeros(N)
+        string = (file[14].strip('\n')).split(', ')
+        for i in range(0, len(NEUTRON_N3N_GRID)):
             if string[i] != '':
-                self.NEUTRON_N3N_GRID[i] = float(string[i])
+                NEUTRON_N3N_GRID[i] = float(string[i])
         # if self.NEUTRON_N3N_GRID[i] != 0:
         #	print(f'Not a zero, i = {i}')
 
-        string = (file[15].strip('\n'))
+        string = (file[16].strip('\n'))
         NEUTRON_DETECTION = float(string)
 
-        self.PHOTON_DETECTION_GRID = np.zeros(N)
-        string = (file[17].strip('\n')).split(', ')
+        PHOTON_DETECTION_GRID = np.zeros(N)
+        string = (file[18].strip('\n')).split(', ')
         if not self.is_electron:
-            for i in range(0, len(self.PHOTON_DETECTION_GRID)):
+            for i in range(0, len(PHOTON_DETECTION_GRID)):
                 if string[i] != '':
-                    self.PHOTON_DETECTION_GRID[i] = float(string[i]) * pow(10, -8)
+                    PHOTON_DETECTION_GRID[i] = float(string[i]) * pow(10, -8)
         else:
-            for i in range(0, len(self.PHOTON_DETECTION_GRID)):
+            for i in range(0, len(PHOTON_DETECTION_GRID)):
                 if string[i] != '':
-                    self.PHOTON_DETECTION_GRID[i] = float(string[i])
-        Flag = False
-        i = 0
+                    PHOTON_DETECTION_GRID[i] = float(string[i])
+
+
         # Using only interpolated values up to the max electron energy
-        self.PhotonEnergies = []
-        while not Flag:
-            try:
-                if type(self.E0).__module__ == np.__name__:
-                    if self.FULL_ENERGY_GRID[i] <= np.max(self.E0):
-                        self.PhotonEnergies.append(self.FULL_ENERGY_GRID[i])
-                    else:
-                        Flag = True
-                else:
-                    if self.FULL_ENERGY_GRID[i] <= self.E0:
-                        self.PhotonEnergies.append(self.FULL_ENERGY_GRID[i])
-                    else:
-                        Flag = True
-                i += 1
-            except IndexError:
-                break
+        Egrid = np.asarray(self.FULL_ENERGY_GRID, dtype=float)
+        # cutoff = max(self.E0) works whether self.E0 is scalar or array-like
+        cutoff = float(np.max(self.E0))
+        tol = 1e-12
+        # find rightmost index where Egrid[idx] <= cutoff (use tol to avoid fp issues)
+        end_index = np.searchsorted(Egrid, cutoff + tol, side='right')
+        # slice from 0 up to end_index (may be empty)
+        selected = Egrid[:end_index]
+        # store as numpy array (fast for later numeric work)
 
         self.Neutron_detection = NEUTRON_DETECTION
         if self.is_electron:
-            self.PhotonEnergies = np.array(self.PhotonEnergies)
             # Saving length of the energy array to save time on using the 'len' function
-            self.PhotonEnergies_length = len(self.PhotonEnergies)
-            self.Bremsstrahlung_cs = self.BREMSSTRAHLUNG_GRID[:self.PhotonEnergies_length]
-            self.Photoneutron_cs = self.PHOTONEUTRON_GRID[:self.PhotonEnergies_length]
-            self.PhotonSlowing_cs = self.PHOTON_SLOWING_GRID[:self.PhotonEnergies_length]
+            self.PhotonEnergies = selected
+            self.PhotonEnergies_length = selected.size
+            self.Photoneutron_cs = PHOTONEUTRON_GRID[:self.PhotonEnergies_length]
+            self.PhotonSlowing_cs = PHOTON_SLOWING_GRID[:self.PhotonEnergies_length]
             self.Neutron_Energies = NEUTRON_ENERGY_GRID[:self.PhotonEnergies_length]
-            self.n2n_cs = self.NEUTRON_N2N_GRID[:self.PhotonEnergies_length]
-            self.n3n_cs = self.NEUTRON_N3N_GRID[:self.PhotonEnergies_length]
-            self.Photon_detection = self.PHOTON_DETECTION_GRID[:self.PhotonEnergies_length]
+            self.n2n_cs = NEUTRON_N2N_GRID[:self.PhotonEnergies_length]
+            self.n3n_cs = NEUTRON_N3N_GRID[:self.PhotonEnergies_length]
+            self.Photon_detection = PHOTON_DETECTION_GRID[:self.PhotonEnergies_length]
+
         else:
             return
 
@@ -337,33 +413,120 @@ class Nucleus(object):
         return Nph, local_energy_indices
 
     def calculate_photons(self, filtering=0):
-        Nph = np.zeros(self.PhotonEnergies_length)
-        Energies = np.zeros(N)  # Photon energy grid
-        Brems_CS = np.zeros(N)  # Bremsstrahlung CS
-        E0 = self.E0  # Electron energy in eV
-        E1 = self.E1 / m0c2  # Changing both energies to m0c2 units
-        E0 = E0 / m0c2
+        """
+        Calculate number of photons in each photon-energy bin produced by
+        bremsstrahlung from electrons in the states described by
+        self.electron_energy_indexes / self.FULL_ENERGY_GRID and populations self.Ne.
 
-        for j in range(1, len(self.Ne)):
-            Brems_CS = np.zeros(self.PhotonEnergies_length)
-            E0 = self.FULL_ENERGY_GRID[self.electron_energy_indexes[j]]  # Electron energy in eV
-            E1 = self.E1 / m0c2  # Changing both energies to m0c2 units
-            E0 = E0 / m0c2
-            Energies[i] = E1 + i * (E0 - E1) / N
-            E = E0 - Energies[i]
-            Brems_CS[i] = 4 * pow(self.Z, 2) * pow(r_0, 2) / 137 * Energies[i] * (
-                    (1 + pow(E / E0, 2) - 2 / 3 * E / E0) * log(183 * pow(self.Z, -1)) + 1 / 9 * E / E0)
-            if filtering == 0:
-                for i in range(1, self.PhotonEnergies_length):
-                    Nph[i] = self.Bremsstrahlung_cs[i] * self.rho * self.Ne
+        Returns
+        -------
+        Nph : numpy.ndarray
+            Photon counts per photon-energy bin (length self.PhotonEnergies_length).
+        """
+        # Photon energy array in eV
+        photon_energies = np.asarray(self.PhotonEnergies)
+        n_ph_bins = self.PhotonEnergies_length
+        if photon_energies.size != n_ph_bins:
+            photon_energies = photon_energies[:n_ph_bins]
+
+        # Prepare output: photon counts per bin
+        Nph = np.zeros(n_ph_bins, dtype=float)
+
+        # Convert E1 and any electron energies to m0c2 units for cross-section formula,
+        # but we will keep photon_energies in eV for threshold checks and convert when needed.
+        E1_eV = float(self.E1)  # in eV
+        E1 = E1_eV / m0c2  # dimensionless in units of m0c2
+
+        # Electrons population: allow self.Ne to be scalar or an array
+        Ne_arr = np.asarray(self.Ne)
+        scalar_Ne = False
+        if Ne_arr.ndim == 0:
+            scalar_Ne = True
+
+        # Get list of electron-energy indices we'll iterate over.
+        # If self.electron_energy_indexes is not present, fall back to a single energy self.E0.
+        try:
+            electron_indexes = list(self.electron_energy_indexes)
+        except Exception:
+            # fallback: single energy in self.E0
+            electron_indexes = [None]
+
+        # Will store per-electron-state bremsstrahlung cross sections (for debugging / storing)
+        brems_cs_grid = []
+
+        # Pre-calc constants appearing in the formula
+        Z = float(self.Z)
+        rho = float(self.rho)
+        prefactor = 4.0 * (Z ** 2) * (r_0 ** 2) / 137.0
+
+        # Loop over electron-energy states
+        for idx_i, e_idx in enumerate(electron_indexes):
+            # Electron initial energy in eV (before emitting a photon)
+            if e_idx is None:
+                E0_eV = float(self.E0)
             else:
-                for j in range(0, len(self.Ne)):
-                    for i in range(1, self.PhotonEnergies_length):
-                        koef = 1 - (2.71828 ** (- filtering * self.PhotonEnergies[i]))
-                        Nph[i] = self.Ne[j] * self.Bremsstrahlung_cs[i] * koef * self.rho
+                E0_eV = float(self.FULL_ENERGY_GRID[e_idx])
 
-        self.BREMSSTRAHLUNG_GRID = None
-        self.Bremsstrahlung_cs = None
+            # Convert to m0c2 units for the formula
+            E0 = E0_eV / m0c2
+
+            # Maximum photon energy allowed for this electron state:
+            # photon_energy <= E0_eV - E1_eV (so final electron energy >= E1_eV)
+            max_photon_energy = max(0.0, E0_eV - E1_eV)
+
+            # mask of photon bins that are physically allowed for this electron state
+            allowed_mask = photon_energies <= max_photon_energy
+
+            if not np.any(allowed_mask):
+                # No allowed photons from this electron energy -> zero contribution
+                brems_cs_grid.append(np.zeros(n_ph_bins))
+                continue
+
+            # Convert the photon energies to m0c2 units for formula
+            photon_m = photon_energies / m0c2
+
+            # Electron energy after emission (E_after = E_before - photon)
+            E_after_m = (E0_eV - photon_energies) / m0c2
+
+            # Avoid negative or zero division; keep computation only on allowed_mask
+            ratio = np.zeros_like(photon_m)
+            ratio[allowed_mask] = E_after_m[allowed_mask] / E0  # E_after / E_before
+
+            # Compute the differential cross-section (vectorized)
+            # cs = prefactor * photon_m * ( (1 + ratio^2 - (2/3)*ratio )*log(183/Z) + (1/9)*ratio )
+            # Use np.errstate to suppress warnings where ratio is undefined
+            with np.errstate(divide='ignore', invalid='ignore'):
+                log_term = np.log(183.0 * (Z ** -1.0))
+                cs = np.zeros(n_ph_bins, dtype=float)
+                cs_expr = (1.0 + ratio ** 2 - (2.0 / 3.0) * ratio) * log_term + (1.0 / 9.0) * ratio
+                cs[allowed_mask] = prefactor * photon_m[allowed_mask] * cs_expr[allowed_mask]
+
+            # store per-state cs row
+            brems_cs_grid.append(cs)
+
+            # number of electrons in this state
+            if scalar_Ne:
+                ne_count = float(self.Ne)
+            else:
+                # assume self.Ne aligns with electron_indexes; if not, we take nearest or 0
+                try:
+                    ne_count = float(Ne_arr[idx_i])
+                except Exception:
+                    # fallback: if lengths mismatch, assume zero
+                    ne_count = 0.0
+
+            # filtering weight (if filtering==0 => weight 1)
+            if filtering == 0:
+                weight = 1.0
+            else:
+                # use exponential attenuation: 1 - exp(- filtering * photon_energy)
+                # photon_energies in eV are fine as argument to the user-given filtering factor
+                weight = 1.0 - np.exp(- filtering * photon_energies)
+
+            # Add contribution to total photon counts
+            # Nph += ne_count * cs * weight * rho
+            Nph += ne_count * cs * weight * rho
+
         return Nph
 
     def calculate_neutrons(self, Nph, l_wall, indices=[]):
@@ -372,8 +535,6 @@ class Nucleus(object):
         if self.is_electron:
             for i in range(1, len(Nph)):
                 Nn[i] = Nph[i] * (1 - 2.71828 ** (- l_wall * self.Photoneutron_cs[i] * self.rho))
-            self.PHOTONEUTRON_GRID = None
-            self.Photoneutron_cs = None
         else:
             for i in range(1, len(Nph)):
                 Nn[i] = Nph[i] * (1 - 2.71828 ** (- l_wall * self.PHOTONEUTRON_GRID[indices[i]] * self.rho))
